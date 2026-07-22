@@ -1,0 +1,10 @@
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_configs = true
+check_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["openai"]
+ignore_missing_imports = true
