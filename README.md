@@ -10,7 +10,6 @@
 | kb.json | Agent 备选，单文件结构化 JSON |
 | graph.html | Agent 调用，vis.js 图谱，内嵌全量数据，搜索即用 |
 | KDG API | Agent 主力运行时，支持搜索/关联/图遍历/语义检索 |
-| kb/ | 人工阅读，每页一个 .md |
 
 ## 架构
 
