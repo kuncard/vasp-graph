@@ -5,7 +5,13 @@ Usage:
     python import_to_kdg.py data/enriched.json data/edges.json --db vasp_graph_kdg.db
 """
 
-import json, argparse, os, uuid
+import json, argparse, os, uuid, re, unicodedata
+
+def slug_from_title(title: str) -> str:
+    """Simple slug: lowercase, replace non-alphanum with hyphens."""
+    slug = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug.lower()).strip("-")
+    return slug or "entry"
 
 
 def import_graph(nodes_path: str, edges_path: str, db_path: str):
@@ -100,18 +106,22 @@ def import_graph(nodes_path: str, edges_path: str, db_path: str):
             kdg_id = str(uuid.uuid4())
             id_map[nid] = kdg_id
 
-            from core.utils.slug import slug_from_title
             slug = slug_from_title(title)
             # Ensure unique slug by appending counter if needed
             slug = f"{slug}-{i}" if slug in used_slugs else slug
             used_slugs.add(slug)
+
+            md_content = "\n".join(md_lines)
+            # Strip backslashes to avoid JSON serialization errors in know-do-graph API
+            # (LaTeX commands like \partial, \nabla break JSON when unescaped)
+            md_content = md_content.replace("\\", "")
 
             entry = Entry(
                 id=kdg_id,
                 title=title,
                 slug=slug,
                 entry_type=entry_type,
-                content="\n".join(md_lines),
+                content=md_content,
                 tags=tags[:8],
                 metadata=EntryMetadata(subtype=n.get("subtype", "")),
             )
@@ -173,7 +183,7 @@ def import_graph(nodes_path: str, edges_path: str, db_path: str):
     import os as _os
     size_mb = _os.path.getsize(db_path) / (1024 * 1024)
     print(f"\nDatabase: {db_path} ({size_mb:.1f} MB)")
-    print(f"To serve: know-do-graph serve --db {db_path}")
+    print(f"To serve: KDG_DB_PATH={db_path} know-do-graph serve")
 
 
 if __name__ == "__main__":
