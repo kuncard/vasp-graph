@@ -74,9 +74,11 @@ pip install -r requirements.txt
 
 ### 环境变量
 
+使用 OpenAI 兼容 API，支持 OpenAI / DeepSeek / 其他兼容厂商：
+
 ```bash
 export OPENAI_API_KEY=sk-xxx
-export OPENAI_API_BASE=https://api.deepseek.com
+export OPENAI_API_BASE=https://api.deepseek.com   # 换成你的 API 地址
 ```
 
 wiki_dir 指向 HTTrack 镜像目录，如 `vasp/www.vasp.at/wiki/index.php/`。
