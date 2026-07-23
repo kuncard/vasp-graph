@@ -1,14 +1,15 @@
 # VASP Knowledge Graph
 
-将 VASP Wiki 转化为结构化知识库，供 AI Agent 检索，同时提供 2D 交互图谱。
+将 VASP Wiki 转化为结构化知识库，全链路面向 AI Agent，同时提供人工可读的静态产物与交互图谱。
 
 ## 产物
 
 | 文件 | 用途 |
 |------|------|
 | kb.md | Agent 主力，单文件 Markdown，933 页面 |
-| kb.json | Agent 备选，结构化 JSON |
-| graph.html | 人工浏览，vis.js 交互图谱 |
+| kb.json | Agent 备选，单文件结构化 JSON |
+| graph.html | Agent / 人工，vis.js 图谱，内嵌全量数据，搜索即用 |
+| KDG API | Agent 主力运行时，支持搜索/关联/图遍历/语义检索 |
 | kb/ | 人工阅读，每页一个 .md |
 
 ## 架构
