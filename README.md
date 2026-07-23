@@ -25,7 +25,7 @@ VASP Wiki HTML 镜像
     │
     ▼  nodes_enriched.json
     │
-    ├── generate_markdown.py     kb.md + kb/
+    ├── generate_markdown.py     kb.md
     ├── generate_json_kb.py      kb.json
     ├── graph2d.py               graph.html
     └── lookup.py                按需补漏
@@ -60,7 +60,7 @@ VASP Wiki HTML 镜像
 
 ```bash
 python import_to_kdg.py data/enriched.json data/edges.json --db vasp_graph.db
-know-do-graph serve --db vasp_graph.db
+KDG_DB_PATH=vasp_graph.db know-do-graph serve
 ```
 
 ## 使用方式
@@ -94,7 +94,7 @@ python pipeline.py <wiki_dir> --no-reclassify --no-tutorials  # 跳过 LLM
 python crawl_graph.py <wiki_dir> --auto-seeds 5 -o data/nodes_raw --no-enrich
 python reclassify_with_agent.py data/nodes_raw_nodes.json --only best_practice,generic,domain -o data/reclassified.json
 python enrich_nodes.py data/reclassified.json -o data/enriched.json
-python generate_markdown.py data/enriched.json data/nodes_raw_edges.json -o kb/ --single-file
+python generate_markdown.py data/enriched.json data/nodes_raw_edges.json -o kb.md --single-file
 python graph2d.py data/enriched.json data/nodes_raw_edges.json --max 0 -o graph.html
 ```
 
@@ -124,6 +124,7 @@ vasp-graph/
 ├── generate_markdown.py
 ├── generate_json_kb.py
 ├── graph2d.py
+├── import_to_kdg.py
 ├── lookup.py
 ├── parse_wiki.py
 ├── vis_bundle.js
