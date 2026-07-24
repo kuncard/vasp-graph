@@ -610,22 +610,48 @@ class EnhancedSearcher:
             return self._fallback_top(limit, f"Query '{q}' had only stop words — showing top pages")
         scores: dict[int, float] = defaultdict(float)
 
+        # ── Adaptive weights based on query characteristics ──
+        # Specific query (high avg IDF, exact param name) → trust original more
+        # Broad query (low avg IDF, single word) → lean on synonyms
+        query_tokens = [w for w in re.findall(r"[a-z0-9]{2,}", q.lower())
+                        if w not in self.bm25._stop_words]
+        token_idfs = [self.bm25._idf.get(t, 1.0) for t in query_tokens]
+        avg_idf = sum(token_idfs) / max(1, len(token_idfs))
+        is_exact_param = any(
+            t.upper() in self.bm25._node_map and
+            self.bm25._node_map[t.upper()].get("subtype") == "parameter"
+            for t in query_tokens
+        )
+
+        if is_exact_param or avg_idf > 4.0:
+            # Highly specific: "MAGMOM", "ENCUTGWSOFT"
+            primary_w, expanded_w = 4.0, 0.5
+        elif len(query_tokens) == 1 and avg_idf < 2.5:
+            # Broad single word: "relaxation", "method", "energy"
+            primary_w, expanded_w = 1.5, 2.0
+        else:
+            # Balanced: multi-word or medium specificity
+            primary_w, expanded_w = 2.0, 1.5
+
+        if verbose:
+            print(f"  Query: {query} (avg_idf={avg_idf:.1f})", file=sys.stderr)
+            print(f"  Weights: primary={primary_w} expanded={expanded_w}", file=sys.stderr)
+
         # Normalize BM25 scores
         max_primary = max(s for _, s in primary) if primary else 1.0
         for idx, s in primary:
-            scores[idx] += s / max_primary * 2.0  # primary ×2 weight (validated)
+            scores[idx] += s / max_primary * primary_w
 
-        # 2. Expanded query boost (half weight)
+        # 2. Expanded query boost
         expanded = expand_query(query)
         if verbose:
-            print(f"  Query: {query}", file=sys.stderr)
             print(f"  Expanded: {expanded[:8]}...", file=sys.stderr)
 
         for term in expanded[1:min(len(expanded), 10)]:
             secondary = self.bm25.search(term, limit=100)
             max_sec = max(s for _, s in secondary) if secondary else 1.0
             for idx, s in secondary:
-                scores[idx] += s / max_sec * 1.5  # secondary ×1.5 weight (validated)
+                scores[idx] += s / max_sec * expanded_w
 
         # 3. Neighbor vote: nodes near top BM25 hits get a boost
         #    Being in a "hot zone" of the graph signals relevance
