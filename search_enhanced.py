@@ -189,6 +189,44 @@ def build_neighbor_graph(edges_file: str = "data/test_edges.json") -> dict[str, 
 # BM25 engine — replaces KDG keyword search entirely
 # ═══════════════════════════════════════════════════════════════════
 
+def load_nodes_from_kdg(db_path: str) -> list[dict]:
+    """Read KDG SQLite database and return BM25-compatible node dicts."""
+    import sqlalchemy as sa
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        rows = conn.execute(sa.text(
+            "SELECT id, title, entry_type, content, tags, metadata_json FROM entries"
+        )).all()
+    nodes = []
+    for r in rows:
+        try: meta = json.loads(r.metadata_json or "{}")
+        except json.JSONDecodeError: meta = {}
+        try: tag_list = json.loads(r.tags or "[]")
+        except json.JSONDecodeError: tag_list = []
+        nodes.append({
+            "id": r.id,
+            "title": r.title or "",
+            "entry_type": r.entry_type or "capability",
+            "content": r.content or "",
+            "tags": tag_list,
+            "subtype": meta.get("subtype", "generic"),
+            "structured": {},
+        })
+    return nodes
+
+
+def load_edges_from_kdg(db_path: str) -> list[dict]:
+    """Read edges from KDG SQLite and return {source, target, relation} dicts."""
+    import sqlalchemy as sa
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        rows = conn.execute(sa.text(
+            "SELECT source_id, target_id, relation FROM edges"
+        )).all()
+    return [{"source": r.source_id, "target": r.target_id, "relation": r.relation}
+            for r in rows]
+
+
 # ── Module-level stemmer (pickle-safe) ──
 _STEM_SUFFIXES = [
     "izational", "isation", "izations", "tational", "ational",
@@ -222,6 +260,48 @@ def _stem(w: str) -> str:
 
 class BM25Engine:
     """Local BM25 search over the enriched JSON, no KDG dependency for scoring."""
+
+    @classmethod
+    def from_kdg_db(cls, db_path: str = "vasp_graph_kdg3.db") -> "BM25Engine":
+        """Build BM25 index from a KDG SQLite database instead of JSON."""
+        import sqlalchemy as sa
+        engine = sa.create_engine(f"sqlite:///{db_path}")
+        # Reflect the entries table (no ORM model import needed)
+        insp = sa.inspect(engine)
+        if "entries" not in insp.get_table_names():
+            raise FileNotFoundError(f"No entries table in {db_path}")
+
+        rows = engine.execute(sa.text(
+            "SELECT id, title, entry_type, content, tags, metadata_json FROM entries"
+        )).all()
+
+        # Convert KDG rows to BM25Engine-compatible node format
+        nodes = []
+        for r in rows:
+            try:
+                meta = json.loads(r.metadata_json or "{}")
+            except json.JSONDecodeError:
+                meta = {}
+            try:
+                tag_list = json.loads(r.tags or "[]")
+            except json.JSONDecodeError:
+                tag_list = []
+
+            nodes.append({
+                "id": r.id,
+                "title": r.title or "",
+                "entry_type": r.entry_type or "capability",
+                "content": r.content or "",
+                "tags": tag_list,
+                "subtype": meta.get("subtype", "generic"),
+                "structured": {},  # KDG stores structured info in content markdown
+            })
+
+        # Build engine from these nodes via a temp JSON file
+        import tempfile, os as _os
+        tmp = _os.path.join(tempfile.gettempdir(), "vasp_kdg_nodes.json")
+        json.dump(nodes, open(tmp, "w", encoding="utf-8"))
+        return cls(enriched_file=tmp)
 
     def __init__(self, enriched_file: str = "data/test_enriched.json"):
         import math, os, pickle, time
