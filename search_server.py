@@ -48,13 +48,15 @@ def health():
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"),
            limit: int = Query(10, ge=1, le=100),
+           subtype: str | None = Query(None, description="Filter: parameter|tutorial|domain|best_practice|pitfall|generic"),
            verbose: bool = Query(False)):
     """Enhanced search: BM25 + graph boost + type boost."""
     if searcher is None:
         return {"error": "Searcher not initialized yet"}
-    results = searcher.search(q, limit=limit, verbose=verbose)
+    results = searcher.search(q, limit=limit, verbose=verbose, subtype=subtype)
     return {
         "query": q,
+        "subtype_filter": subtype,
         "total": len(results),
         "results": results,
     }

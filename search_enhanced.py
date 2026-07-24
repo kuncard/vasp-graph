@@ -593,11 +593,16 @@ class EnhancedSearcher:
         print(f"  PageRank: {len(self.pagerank)} nodes", file=sys.stderr)
         print(f"  Neighbor graph: {len(self.neighbors)} nodes", file=sys.stderr)
 
-    def search(self, query: str, limit: int = 10, verbose: bool = False) -> list[dict]:
+    def search(self, query: str, limit: int = 10, verbose: bool = False,
+               subtype: str | None = None) -> list[dict]:
         """Enhanced search: BM25 scoring → graph boost → type boost.
 
         No KDG dependency for ranking. Query expansion is used as a second-pass
         boost: expanded terms contribute additional BM25 score at half weight.
+
+        Args:
+            subtype: optional filter — 'parameter', 'tutorial', 'domain',
+                     'best_practice', 'pitfall', 'generic'
         """
 
         q = query.strip()
@@ -711,6 +716,13 @@ class EnhancedSearcher:
             scored.append((final_score, node))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Filter by subtype if requested (after scoring, before capping)
+        if subtype:
+            scored = [(s, n) for s, n in scored
+                      if n.get("subtype") == subtype]
+            if verbose:
+                print(f"  Subtype filter '{subtype}': {len(scored)} remaining", file=sys.stderr)
 
         if verbose:
             print(f"  Candidates scored: {len(scored)}", file=sys.stderr)
