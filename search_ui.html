@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VASP Knowledge Graph Search</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f4f0;color:#333;max-width:900px;margin:0 auto;padding:20px}
+h1{font-size:22px;margin-bottom:4px}
+.sub{color:#999;font-size:12px;margin-bottom:20px}
+.search-bar{display:flex;gap:8px;margin-bottom:20px}
+.search-bar input{flex:1;padding:12px 16px;font-size:15px;border:2px solid #ddd;border-radius:8px;outline:none;transition:border-color .2s}
+.search-bar input:focus{border-color:#5e81ac}
+.search-bar button{padding:12px 20px;font-size:15px;background:#5e81ac;color:#fff;border:none;border-radius:8px;cursor:pointer}
+.search-bar button:hover{background:#4a6d96}
+.result{border:1px solid #e8e6dd;border-radius:10px;padding:14px 18px;margin-bottom:10px;cursor:pointer;transition:background .15s;display:flex;gap:14px}
+.result:hover{background:#fff}
+.result .rank{font-size:22px;color:#bbb;min-width:28px;font-weight:700;text-align:right}
+.result .info{flex:1}
+.result .title{font-size:15px;font-weight:600;color:#2e3440}
+.result .type{font-size:10px;text-transform:uppercase;letter-spacing:.04em;
+  background:#e5e9f0;padding:1px 8px;border-radius:3px;margin-left:8px;display:inline}
+.result .type.domain{background:#d8e2f0;color:#3b5d80}
+.result .type.parameter{background:#f5e6cc;color:#8a5f28}
+.result .type.tutorial{background:#dce8d8;color:#4d6b42}
+.result .tags{font-size:10px;color:#aaa;margin-top:6px;display:flex;gap:4px;flex-wrap:wrap}
+.result .tags span{background:#f0efec;padding:1px 6px;border-radius:3px}
+.result .def{font-size:12px;color:#666;margin-top:4px;line-height:1.5}
+.meta{font-size:10px;color:#bbb;text-align:center;margin-top:20px}
+.placeholder{text-align:center;padding:60px 20px;color:#bbb}
+.placeholder .icon{font-size:48px;margin-bottom:12px}
+.hint{font-size:12px;color:#999;margin-top:8px;font-style:italic}
+</style>
+</head>
+<body>
+<h1>VASP Knowledge Graph</h1>
+<div class="sub">BM25 + Graph-aware search over 933 VASP Wiki pages</div>
+
+<div class="search-bar">
+  <input id="q" placeholder="Search VASP parameters, tutorials, theory..."
+         autofocus onkeydown="if(event.key==='Enter')search()">
+  <button onclick="search()">Search</button>
+</div>
+
+<div id="results">
+  <div class="placeholder">
+    <div class="icon">&#128269;</div>
+    <div>Try: magnetic, ENCUT, spin-orbit coupling, k-point, relaxation</div>
+  </div>
+</div>
+
+<div class="meta" id="meta"></div>
+
+<script>
+let timer = null;
+document.getElementById('q').addEventListener('input', function(){
+  clearTimeout(timer);
+  timer = setTimeout(search, 400);
+});
+
+async function search(){
+  const q = document.getElementById('q').value.trim();
+  if(!q) return;
+  const res = document.getElementById('results');
+  res.innerHTML = '<div class="placeholder"><div class="icon">&#9201;</div><div>Searching...</div></div>';
+
+  try {
+    const resp = await fetch(`http://localhost:8766/search?q=${encodeURIComponent(q)}&limit=15`);
+    const data = await resp.json();
+    if(!data.results || data.results.length === 0){
+      res.innerHTML = '<div class="placeholder"><div class="icon">&#128533;</div><div>No results found</div><div class="hint">Try different keywords</div></div>';
+      document.getElementById('meta').textContent = '';
+      return;
+    }
+    res.innerHTML = data.results.map((r,i) => {
+      const typeClass = r.subtype || '';
+      const def = (r.structured && r.structured.definition) || '';
+      const tags = (r.tags || []).slice(0,6);
+      return `<div class="result" onclick="window.open('http://localhost:8765/entries/${r.id}','_blank')">
+        <div class="rank">${i+1}</div>
+        <div class="info">
+          <span class="title">${he(r.title)}</span>
+          <span class="type ${typeClass}">${r.entry_type} / ${r.subtype||'?'}</span>
+          ${def ? `<div class="def">${he(def.substring(0,200))}</div>` : ''}
+          ${tags.length ? `<div class="tags">${tags.map(t=>'<span>'+he(t)+'</span>').join('')}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    document.getElementById('meta').textContent =
+      `${data.total} results · query: "${data.query}"`;
+  } catch(e){
+    res.innerHTML = '<div class="placeholder"><div class="icon">&#9888;</div><div>Search server not running</div><div class="hint">Start with: python search_server.py</div></div>';
+    document.getElementById('meta').textContent = 'Error: ' + e.message;
+  }
+}
+
+function he(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+</script>
+</body>
+</html>

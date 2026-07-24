@@ -166,6 +166,18 @@ def compute_degree_centrality(edges_file: str = "data/test_edges.json") -> dict[
     return {k: v / max_d for k, v in degree.items()}
 
 
+def build_neighbor_graph(edges_file: str = "data/test_edges.json") -> dict[str, set[str]]:
+    """Build adjacency list: {node_id: {neighbor_ids}} from edge list."""
+    with open(edges_file, encoding="utf-8") as f:
+        edges_list = json.load(f)
+    graph: dict[str, set[str]] = defaultdict(set)
+    for e in edges_list:
+        s, t = e["source"], e["target"]
+        graph[s].add(t)
+        graph[t].add(s)
+    return dict(graph)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # C. IDF — Inverse Document Frequency
 # ═══════════════════════════════════════════════════════════════════
@@ -576,9 +588,10 @@ class EnhancedSearcher:
         self.bm25 = BM25Engine(enriched_file)
         self.pagerank = compute_pagerank(edges_file)
         self.degree = compute_degree_centrality(edges_file)
+        self.neighbors = build_neighbor_graph(edges_file)
         print(f"  BM25 index: {len(self.bm25._inverted)} terms, {self.bm25._N} docs", file=sys.stderr)
         print(f"  PageRank: {len(self.pagerank)} nodes", file=sys.stderr)
-        print(f"  Degree: {len(self.degree)} nodes", file=sys.stderr)
+        print(f"  Neighbor graph: {len(self.neighbors)} nodes", file=sys.stderr)
 
     def search(self, query: str, limit: int = 10, verbose: bool = False) -> list[dict]:
         """Enhanced search: BM25 scoring → graph boost → type boost.
@@ -614,11 +627,30 @@ class EnhancedSearcher:
             for idx, s in secondary:
                 scores[idx] += s / max_sec * 1.0  # secondary ×1 weight
 
-        # 3. Graph + type boost
+        # 3. Neighbor vote: nodes near top BM25 hits get a boost
+        #    Being in a "hot zone" of the graph signals relevance
+        top_nids: set[str] = set()
+        sorted_by_bm25 = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        for idx, _ in sorted_by_bm25[:40]:  # top 40 form the "hot zone"
+            top_nids.add(self.bm25.get_node(idx)["id"])
+
+        neighbor_boosts: dict[str, float] = {}
+        for idx in scores:
+            nid = self.bm25.get_node(idx)["id"]
+            nb = self.neighbors.get(nid, set())
+            hot_neighbors = len(nb & top_nids)
+            if hot_neighbors > 0:
+                neighbor_boosts[nid] = 1.0 + 0.2 * hot_neighbors
+        if verbose:
+            boosted = sum(1 for v in neighbor_boosts.values() if v > 1.0)
+            print(f"  Neighbor boost applied to {boosted} nodes", file=sys.stderr)
+
+        # 4. Graph + type boost
         scored: list[tuple[float, dict]] = []
         for idx, bm25_score in scores.items():
             node = self.bm25.get_node(idx)
             nid = node["id"]
+            title = node.get("title", "")
 
             pr = self.pagerank.get(nid, 0.0)
             deg = self.degree.get(nid, 0.0)
@@ -631,7 +663,25 @@ class EnhancedSearcher:
             type_boost = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
                           "best_practice": 1.0, "pitfall": 1.0, "generic": 0.6}.get(st, 1.0)
 
-            final_score = bm25_score * graph_boost * type_boost
+            nb_boost = neighbor_boosts.get(nid, 1.0)
+
+            # Hub penalty: VASP core files (INCAR, POTCAR, KPOINTS, POSCAR, OUTCAR)
+            # are linked to almost everything — penalize them when top result is a parameter
+            _HUB_TITLES = {"INCAR", "POTCAR", "KPOINTS", "POSCAR", "OUTCAR"}
+            top_subtype = self.bm25.get_node(sorted_by_bm25[0][0]).get("subtype", "")
+            if top_subtype == "parameter" and title in _HUB_TITLES:
+                nb_boost *= 0.5  # halve the neighbor boost for hub pages
+
+            # Subtype preference: boost same-subtype results when top is dominant
+            subtype_boost = 1.0
+            if top_subtype == "parameter" and st == "parameter":
+                subtype_boost = 1.2  # prefer parameters when top is a parameter
+            elif top_subtype == "tutorial" and st == "tutorial":
+                subtype_boost = 1.2  # prefer tutorials when top is a tutorial
+            if subtype_boost != 1.0 and verbose:
+                pass  # tracked below
+
+            final_score = bm25_score * nb_boost * graph_boost * type_boost * subtype_boost
             scored.append((final_score, node))
 
         scored.sort(key=lambda x: x[0], reverse=True)

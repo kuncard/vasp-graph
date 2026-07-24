@@ -11,6 +11,7 @@ KDG API still runs on :8765, this runs alongside on :8766.
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 import sys, os
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -28,6 +29,15 @@ def _startup():
     global searcher
     searcher = EnhancedSearcher()
     print("Enhanced searcher ready.", flush=True)
+
+
+@app.get("/", response_class=HTMLResponse)
+def ui():
+    """Serve the search UI."""
+    ui_path = os.path.join(os.path.dirname(__file__), "search_ui.html")
+    if os.path.exists(ui_path):
+        return open(ui_path, encoding="utf-8").read()
+    return "<h1>Search UI not found</h1>"
 
 
 @app.get("/health")
