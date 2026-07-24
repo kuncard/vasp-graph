@@ -613,7 +613,7 @@ class EnhancedSearcher:
         # Normalize BM25 scores
         max_primary = max(s for _, s in primary) if primary else 1.0
         for idx, s in primary:
-            scores[idx] += s / max_primary * 3.0  # primary ×3 weight
+            scores[idx] += s / max_primary * 2.0  # primary ×2 weight (validated)
 
         # 2. Expanded query boost (half weight)
         expanded = expand_query(query)
@@ -625,7 +625,7 @@ class EnhancedSearcher:
             secondary = self.bm25.search(term, limit=100)
             max_sec = max(s for _, s in secondary) if secondary else 1.0
             for idx, s in secondary:
-                scores[idx] += s / max_sec * 1.0  # secondary ×1 weight
+                scores[idx] += s / max_sec * 1.5  # secondary ×1.5 weight (validated)
 
         # 3. Neighbor vote: nodes near top BM25 hits get a boost
         #    Being in a "hot zone" of the graph signals relevance
@@ -640,7 +640,7 @@ class EnhancedSearcher:
             nb = self.neighbors.get(nid, set())
             hot_neighbors = len(nb & top_nids)
             if hot_neighbors > 0:
-                neighbor_boosts[nid] = 1.0 + 0.2 * hot_neighbors
+                neighbor_boosts[nid] = 1.0 + 0.3 * hot_neighbors
         if verbose:
             boosted = sum(1 for v in neighbor_boosts.values() if v > 1.0)
             print(f"  Neighbor boost applied to {boosted} nodes", file=sys.stderr)
@@ -657,7 +657,7 @@ class EnhancedSearcher:
             # Graph boost: only significant when BM25 score is already meaningful
             # Uses sqrt to dampen extreme PageRank differences
             import math as _m
-            graph_boost = 1.0 + _m.sqrt(pr) * 0.5 + _m.sqrt(deg) * 0.3
+            graph_boost = 1.0 + _m.sqrt(pr) * 0.5 + _m.sqrt(deg) * 0.1
 
             st = node.get("subtype", "generic")
             type_boost = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
