@@ -7,6 +7,54 @@ Usage:
 
 import json, argparse, os, uuid, re, unicodedata
 
+# ── Lightweight English stemmer (no NLTK dependency) ──
+
+# Suffix stripping rules ordered longest-first
+_STEM_SUFFIXES = [
+    "izational", "isation", "izations", "tational", "ational",
+    "ization", "fulness", "ousness", "iveness", "ability",
+    "alities", "alisms", "ements", "ations", "istics",
+    "ement", "ments", "ation", "ities", "fully",
+    "ingly", "ously", "istic", "izing", "ising",
+    "ical", "able", "ible", "ness", "ment",
+    "ship", "tion", "sion", "ally", "ated",
+    "ized", "ised", "ting", "ring", "ling",
+    "ding", "sing", "ives", "isms", "ives",
+    "ion", "est", "ity", "ism", "ize",
+    "ers", "ies", "ing", "als", "ves",
+    "ed", "es", "ly", "al", "ic",
+    "er", "or", "s",
+]
+
+def stem_word(w: str) -> str:
+    """Return stem of a single word using simple suffix stripping."""
+    w = w.lower()
+    for suffix in _STEM_SUFFIXES:
+        if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+            return w[:-len(suffix)]
+    return w
+
+
+def index_terms(title: str, definition: str, content: str) -> list[str]:
+    """Extract search index terms from a node: stem key content words.
+
+    Returns list of unique stemmed words from title + definition, up to 30.
+    These are appended to content so KDG ILIKE can cross-match variants.
+    """
+    # Extract meaningful words (4+ chars, alphabetic)
+    text = f"{title} {definition} {(content or '')[:2000]}"
+    words = set(re.findall(r"[a-zA-Z]{4,}", text.lower()))
+
+    # Stem each word, keep unique stems that differ from the original
+    stems: set[str] = set()
+    for w in words:
+        s = stem_word(w)
+        if len(s) >= 4 and s != w:  # Only add if stemming actually changed it
+            stems.add(s)
+
+    # Sort for determinism
+    return sorted(stems)[:30]
+
 def slug_from_title(title: str) -> str:
     """Simple slug: lowercase, replace non-alphanum with hyphens."""
     slug = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
@@ -116,13 +164,27 @@ def import_graph(nodes_path: str, edges_path: str, db_path: str):
             # (LaTeX commands like \partial, \nabla break JSON when unescaped)
             md_content = md_content.replace("\\", "")
 
+            # Append stemmed index terms so KDG ILIKE can cross-match variants
+            # e.g. "magnetic" search finds "Magnetism" page (stem → "magnet")
+            idx = index_terms(title, defn, content)
+            if idx:
+                md_content += "\n\n<!-- idx: " + " ".join(idx) + " -->"
+                # Also add top stemmed terms to tags for higher KDG match score (3 pts)
+                # Merge with existing tags: orig first, then fill up with stems
+                stem_tags = idx[:5]  # top 5 stems
+                merged_tags = list(tags)[:8]
+                for st in stem_tags:
+                    if st not in merged_tags:
+                        merged_tags.append(st)
+                tags = merged_tags[:10]  # allow up to 10 tags
+
             entry = Entry(
                 id=kdg_id,
                 title=title,
                 slug=slug,
                 entry_type=entry_type,
                 content=md_content,
-                tags=tags[:8],
+                tags=tags[:10],
                 metadata=EntryMetadata(subtype=n.get("subtype", "")),
             )
             entries.append(entry)

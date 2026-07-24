@@ -42,6 +42,7 @@ _CONCEPT_EXPAND = {
     "spin": ["magnetic", "magnetism", "spin-orbit", "noncollinear", "spin spiral"],
     "encut": ["energy cutoff", "plane wave", "ENMAX", "ENMIN", "cutoff energy"],
     "isif": ["stress", "cell optimization", "cell relaxation", "volume relaxation", "IBRION", "PSTRESS"],
+    "kpoint": ["k-points", "k-point", "k point", "k-point mesh", "brillouin zone", "IBZKPT", "KSPACING"],
     "kpoints": ["k-points", "k point", "k-point mesh", "brillouin zone", "IBZKPT", "KSPACING"],
     "relaxation": ["ISIF", "IBRION", "NSW", "EDIFFG", "POTIM", "optimization"],
     "electronic": ["band", "eigenvalues", "charge density", "potential", "wavefunction"],
@@ -61,8 +62,29 @@ def expand_query(query: str, max_tokens: int = 20) -> list[str]:
     tokens_raw = re.findall(r"[a-zA-Z0-9_-]+", query.lower())
     # Filter stopwords
     stopwords = {"a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or",
-                 "is", "are", "be", "how", "what", "why", "with", "can", "do", "does"}
+                 "is", "are", "be", "how", "what", "why", "with", "can", "do", "does",
+                 "method", "methods", "using", "used", "use", "note", "notes",
+                 "example", "examples", "result", "results", "value", "values",
+                 "case", "cases", "follow", "following", "set", "setting",
+                 "page", "pages", "see", "also", "may", "default",
+                 "will", "must", "should", "need", "needs",
+                 "one", "two", "first", "well", "much", "part", "type",
+                 "per", "due", "via", "way", "many", "often", "without", "within",
+                 "section", "describe", "described", "shown", "given",
+                 "available", "possible", "important", "required"}
     tokens = [t for t in tokens_raw if t not in stopwords and len(t) > 1]
+
+    # Handle VASP compound patterns in raw query (before hyphen-splitting loses them)
+    _COMPOUND_MAP = {
+        "k-point": "kpoints", "k-points": "kpoints", "k point": "kpoints",
+        "k mesh": "kpoints", "k-mesh": "kpoints",
+        "spin-orbit": "spin orbit coupling", "spin orbit": "spin orbit coupling",
+        "gw": "gw calculations", "dft-d": "vdw", "dft d": "vdw",
+    }
+    raw_lower = query.lower().replace("_", " ").replace("-", " ")
+    for pattern, expansion in _COMPOUND_MAP.items():
+        if pattern in raw_lower and expansion not in tokens:
+            tokens.append(expansion)
 
     expanded = list(tokens)  # original tokens first (higher priority)
 
@@ -187,8 +209,261 @@ def compute_idf(enriched_file: str = "data/test_enriched.json") -> dict[str, flo
     return idf
 
 
+def compute_tf(enriched_file: str = "data/test_enriched.json") -> dict[str, dict[str, int]]:
+    """Precompute term frequencies for all nodes.
+
+    Returns {entry_id: {stemmed_word: raw_count}} for title+content text.
+    Uses the same simple stemmer as import_to_kdg.py for consistency.
+    """
+    import math
+
+    # Minimal inline stemmer (same logic as import_to_kdg.py)
+    suffixes = [
+        "izational", "isation", "izations", "tational", "ational",
+        "ization", "fulness", "ousness", "iveness", "ability",
+        "alities", "alisms", "ements", "ations", "istics",
+        "ement", "ments", "ation", "ities", "fully",
+        "ingly", "ously", "istic", "izing", "ising",
+        "ical", "able", "ible", "ness", "ment",
+        "ship", "tion", "sion", "ally", "ated",
+        "ized", "ised", "ting", "ring", "ling",
+        "ding", "sing", "ives", "isms",
+        "ion", "est", "ity", "ism", "ize",
+        "ers", "ies", "ing", "als", "ves",
+        "ed", "es", "ly", "al", "ic",
+        "er", "or", "s",
+    ]
+    def stem(w):
+        w = w.lower()
+        for sfx in suffixes:
+            if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+                return w[:-len(sfx)]
+        return w
+
+    with open(enriched_file, encoding="utf-8") as f:
+        nodes = json.load(f)
+
+    tf: dict[str, dict[str, int]] = {}
+    for n in nodes:
+        nid = n["id"]
+        title = (n.get("title") or "").lower()
+        content = (n.get("content") or "").lower()
+        text = title + " " + content
+        words = re.findall(r"[a-z]{3,}", text)
+
+        counts: dict[str, int] = defaultdict(int)
+        for w in words:
+            s = stem(w)
+            counts[s] += 1
+
+        tf[nid] = dict(counts)
+
+    return tf
+
+
 # ═══════════════════════════════════════════════════════════════════
-# D. Entropy-based functional word detection
+# BM25 engine — replaces KDG keyword search entirely
+# ═══════════════════════════════════════════════════════════════════
+
+class BM25Engine:
+    """Local BM25 search over the enriched JSON, no KDG dependency for scoring."""
+
+    def __init__(self, enriched_file: str = "data/test_enriched.json"):
+        import math
+
+        with open(enriched_file, encoding="utf-8") as f:
+            self.nodes = json.load(f)
+
+        self._node_map = {n["id"]: n for n in self.nodes}
+
+        # Simple stemmer (same as import_to_kdg.py)
+        suffixes = [
+            "izational", "isation", "izations", "tational", "ational",
+            "ization", "fulness", "ousness", "iveness", "ability",
+            "alities", "alisms", "ements", "ations", "istics",
+            "ement", "ments", "ation", "ities", "fully",
+            "ingly", "ously", "istic", "izing", "ising",
+            "ical", "able", "ible", "ness", "ment",
+            "ship", "tion", "sion", "ally", "ated",
+            "ized", "ised", "ting", "ring", "ling",
+            "ding", "sing", "ives", "isms",
+            "ion", "est", "ity", "ism", "ize",
+            "ers", "ies", "ing", "als", "ves",
+            "ed", "es", "ly", "al", "ic",
+            "er", "or", "s",
+        ]
+        def stem(w):
+            w = w.lower()
+            for sfx in suffixes:
+                if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+                    return w[:-len(sfx)]
+            return w
+
+        # ── VASP-specific stop words ──
+        # These appear everywhere but carry zero topic signal.
+        # Filtered during both indexing and querying.
+        self._stop_words = {
+            # KDG originals
+            "a", "an", "the", "of", "in", "on", "at", "to", "for",
+            "and", "or", "is", "are", "be", "was", "were", "been",
+            # High-frequency VASP functional words
+            "method", "methods", "using", "used", "use", "note",
+            "example", "examples", "result", "results", "value",
+            "case", "cases", "follow", "following", "set", "setting",
+            "page", "pages", "see", "also", "may", "default",
+            "can", "will", "must", "should", "need", "needs",
+            "two", "one", "first", "second", "well", "much",
+            "part", "type", "form", "per", "due", "via",
+            "way", "many", "often", "without", "within",
+            "section", "describe", "described", "shown", "given",
+            "available", "possible", "important", "required",
+        }
+
+        # ── Build inverted index with positions ──
+        # {stemmed_word: {doc_idx: [pos1, pos2, ...]}}
+        self._inverted: dict[str, dict[int, list[int]]] = defaultdict(
+            lambda: defaultdict(list))
+        self._doc_lengths: list[int] = []  # length in tokens per doc
+        self._avgdl: float = 0.0
+        self._N = len(self.nodes)
+
+        for idx, n in enumerate(self.nodes):
+            title = (n.get("title") or "").lower()
+            content = (n.get("content") or "").lower()
+            # Title words count 3× for BM25 scoring
+            text = (title + " ") * 3 + content
+            words = [w for w in re.findall(r"[a-z0-9]{2,}", text)
+                     if w not in self._stop_words]
+
+            self._doc_lengths.append(len(words))
+            for pos, w in enumerate(words):
+                self._inverted[stem(w)][idx].append(pos)
+
+        self._avgdl = sum(self._doc_lengths) / max(1, self._N)
+
+        # ── Precompute IDF (BM25 variant) ──
+        self._idf: dict[str, float] = {}
+        for word, doc_dict in self._inverted.items():
+            df = len(doc_dict)
+            self._idf[word] = math.log((self._N - df + 0.5) / (df + 0.5) + 1.0)
+
+    # ── Proximity scoring ──
+    def _proximity_boost(self, doc_idx: int, query_stems: list[str],
+                         window: int = 30) -> float:
+        """Boost documents where multiple query terms appear close together.
+
+        Returns 1.0 + bonus where bonus increases with more co-located query terms.
+        """
+        if len(query_stems) < 2:
+            return 1.0
+
+        # Gather all positions for all query stems in this doc
+        all_positions: list[int] = []
+        for s in query_stems:
+            positions = self._inverted.get(s, {}).get(doc_idx, [])
+            all_positions.extend(positions)
+
+        if len(all_positions) < 2:
+            return 1.0
+
+        all_positions.sort()
+
+        # Count how many query stems have at least one occurrence within `window`
+        # of another query stem's occurrence
+        co_located_stems: set[str] = set()
+        for i, s1 in enumerate(query_stems):
+            for j, s2 in enumerate(query_stems):
+                if i >= j:
+                    continue
+                pos1_list = self._inverted.get(s1, {}).get(doc_idx, [])
+                pos2_list = self._inverted.get(s2, {}).get(doc_idx, [])
+
+                # Check if any pair of positions is within window
+                for p1 in pos1_list:
+                    for p2 in pos2_list:
+                        if abs(p1 - p2) <= window:
+                            co_located_stems.add(s1)
+                            co_located_stems.add(s2)
+                            break
+                    if s1 in co_located_stems:
+                        break
+
+        # Boost: 1.0 + 0.2 per extra co-located term pair beyond the first
+        pairs = len(co_located_stems)
+        if pairs >= 2:
+            return 1.0 + 0.3 * (pairs - 1)
+        return 1.0
+
+    # ── BM25 scoring ──
+    def search(self, query: str, limit: int = 50, k1: float = 1.5, b: float = 0.75
+               ) -> list[tuple[int, float]]:
+        """Return [(node_idx, bm25_score), ...] sorted descending."""
+        import math
+
+        # Tokenize: alphanumeric, min 2 chars, filter stop words
+        tokens = [w for w in re.findall(r"[a-z0-9]{2,}", query.lower())
+                  if w not in self._stop_words]
+        # Allow known 1-char VASP tokens
+        for ch in re.findall(r"[a-z]", query.lower()):
+            if ch in {"k", "g", "f", "q", "x", "y", "z"}:
+                tokens.append(ch)
+        # Build stem lookup inline
+        suffixes = [
+            "izational", "isation", "izations", "tational", "ational",
+            "ization", "fulness", "ousness", "iveness", "ability",
+            "alities", "alisms", "ements", "ations", "istics",
+            "ement", "ments", "ation", "ities", "fully",
+            "ingly", "ously", "istic", "izing", "ising",
+            "ical", "able", "ible", "ness", "ment",
+            "ship", "tion", "sion", "ally", "ated",
+            "ized", "ised", "ting", "ring", "ling",
+            "ding", "sing", "ives", "isms",
+            "ion", "est", "ity", "ism", "ize",
+            "ers", "ies", "ing", "als", "ves",
+            "ed", "es", "ly", "al", "ic",
+            "er", "or", "s",
+        ]
+        def stem(w):
+            w = w.lower()
+            for sfx in suffixes:
+                if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+                    return w[:-len(sfx)]
+            return w
+
+        stems = list({stem(t) for t in tokens})
+
+        # Score each candidate document
+        doc_scores: dict[int, float] = defaultdict(float)
+        for s in stems:
+            idf = self._idf.get(s, 0.0)
+            if idf == 0.0:
+                continue
+            for doc_idx, positions in self._inverted.get(s, {}).items():
+                tf = len(positions)  # term frequency = number of positions
+                doc_len = self._doc_lengths[doc_idx]
+                numerator = tf * (k1 + 1)
+                denominator = tf + k1 * (1 - b + b * doc_len / self._avgdl)
+                doc_scores[doc_idx] += idf * numerator / denominator
+
+        # Apply proximity boost for multi-term queries
+        if len(stems) >= 2:
+            for doc_idx in list(doc_scores.keys()):
+                boost = self._proximity_boost(doc_idx, stems)
+                doc_scores[doc_idx] *= boost
+
+        # Sort
+        scored = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+        return scored[:limit]
+
+    def get_node(self, idx: int) -> dict:
+        return self.nodes[idx]
+
+    def get_node_by_id(self, nid: str) -> dict | None:
+        return self._node_map.get(nid)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# D. Entropy-based functional word detection (unused, kept for reference)
 # ═══════════════════════════════════════════════════════════════════
 
 def compute_entropy_weight(enriched_file: str = "data/test_enriched.json") -> dict[str, float]:
@@ -295,97 +570,115 @@ class KDGSearcher:
 # ═══════════════════════════════════════════════════════════════════
 
 class EnhancedSearcher:
-    def __init__(self, base_url: str = "http://localhost:8765",
+    def __init__(self,
                  edges_file: str = "data/test_edges.json",
                  enriched_file: str = "data/test_enriched.json"):
-        self.kdg = KDGSearcher(base_url)
+        self.bm25 = BM25Engine(enriched_file)
         self.pagerank = compute_pagerank(edges_file)
         self.degree = compute_degree_centrality(edges_file)
-        self.idf = compute_idf(enriched_file)
-        print(f"  PageRank loaded: {len(self.pagerank)} nodes", file=sys.stderr)
-        print(f"  Degree centrality loaded: {len(self.degree)} nodes", file=sys.stderr)
-        print(f"  IDF vocabulary: {len(self.idf)} words", file=sys.stderr)
+        print(f"  BM25 index: {len(self.bm25._inverted)} terms, {self.bm25._N} docs", file=sys.stderr)
+        print(f"  PageRank: {len(self.pagerank)} nodes", file=sys.stderr)
+        print(f"  Degree: {len(self.degree)} nodes", file=sys.stderr)
 
     def search(self, query: str, limit: int = 10, verbose: bool = False) -> list[dict]:
-        """Enhanced search: expand query → multi-search → graph-rerank."""
+        """Enhanced search: BM25 scoring → graph boost → type boost.
 
-        # 1. Expand query
+        No KDG dependency for ranking. Query expansion is used as a second-pass
+        boost: expanded terms contribute additional BM25 score at half weight.
+        """
+
+        q = query.strip()
+        if not q:
+            return self._fallback_top(limit, "Empty query — showing top pages by importance")
+
+        # 1. Primary BM25 search (original query)
+        primary: list[tuple[int, float]] = self.bm25.search(query, limit=200)
+        if not primary:
+            return self._fallback_top(limit, f"Query '{q}' had only stop words — showing top pages")
+        scores: dict[int, float] = defaultdict(float)
+
+        # Normalize BM25 scores
+        max_primary = max(s for _, s in primary) if primary else 1.0
+        for idx, s in primary:
+            scores[idx] += s / max_primary * 3.0  # primary ×3 weight
+
+        # 2. Expanded query boost (half weight)
         expanded = expand_query(query)
         if verbose:
             print(f"  Query: {query}", file=sys.stderr)
-            print(f"  Expanded: {expanded}", file=sys.stderr)
+            print(f"  Expanded: {expanded[:8]}...", file=sys.stderr)
 
-        # 2. Multi-search: search each expanded term
-        all_hits: dict[str, float] = {}  # entry_id -> accumulated score
-        seen_details: dict[str, dict] = {}
-
-        # Original query first (highest weight)
-        primary_results = self.kdg.search(query, limit=min(limit * 5, 50))
-        for rank, entry in enumerate(primary_results):
-            score = 1.0 / (1 + rank)  # position-based score
-            all_hits[entry["id"]] = score * 2.0  # primary query weight ×2
-            seen_details[entry["id"]] = entry
-
-        # Expanded terms (lower weight)
         for term in expanded[1:min(len(expanded), 10)]:
-            results = self.kdg.search(term, limit=min(limit * 2, 30))
-            for rank, entry in enumerate(results):
-                eid = entry["id"]
-                score = 0.5 / (1 + rank)  # half weight for expanded terms
-                all_hits[eid] = all_hits.get(eid, 0) + score
-                if eid not in seen_details:
-                    seen_details[eid] = entry
+            secondary = self.bm25.search(term, limit=100)
+            max_sec = max(s for _, s in secondary) if secondary else 1.0
+            for idx, s in secondary:
+                scores[idx] += s / max_sec * 1.0  # secondary ×1 weight
 
-        if verbose:
-            print(f"  Raw hits before reranking: {len(all_hits)}", file=sys.stderr)
-
-        # 3. Compute IDF weights for query tokens
-        query_tokens = re.findall(r"[a-z]{3,}", query.lower())
-        token_idfs = {}
-        for tok in query_tokens:
-            token_idfs[tok] = self.idf.get(tok, 1.0)  # default 1.0 for unknown words
-
-        if verbose:
-            idf_info = ", ".join(f"{t}={token_idfs[t]:.1f}" for t in query_tokens[:8])
-            print(f"  Token IDF: {idf_info}", file=sys.stderr)
-
-        # 4. Rerank: KDG score × IDF × graph × type
+        # 3. Graph + type boost
         scored: list[tuple[float, dict]] = []
-        for eid, kdg_score in all_hits.items():
-            entry = seen_details.get(eid, {})
+        for idx, bm25_score in scores.items():
+            node = self.bm25.get_node(idx)
+            nid = node["id"]
 
-            # IDF boost: weight each token by rareness
-            title = (entry.get("title") or "").lower()
-            idf_boost = 1.0
-            matched_high_idf = False
-            for tok, idf_val in token_idfs.items():
-                if tok in title:
-                    idf_boost = max(idf_boost, idf_val)
-                    if idf_val > 3.0:
-                        matched_high_idf = True
+            pr = self.pagerank.get(nid, 0.0)
+            deg = self.degree.get(nid, 0.0)
+            # Graph boost: only significant when BM25 score is already meaningful
+            # Uses sqrt to dampen extreme PageRank differences
+            import math as _m
+            graph_boost = 1.0 + _m.sqrt(pr) * 0.5 + _m.sqrt(deg) * 0.3
 
-            # High-IDF match → full boost; low-IDF only → penalize
-            idf_mult = idf_boost if matched_high_idf else max(0.3, idf_boost / 3.0)
+            st = node.get("subtype", "generic")
+            type_boost = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
+                          "best_practice": 1.0, "pitfall": 1.0, "generic": 0.6}.get(st, 1.0)
 
-            # Graph boost
-            pr = self.pagerank.get(eid, 0.0)
-            deg = self.degree.get(eid, 0.0)
-            graph_boost = 1.0 + pr * 2.0 + deg * 1.0
-
-            # Type boost
-            type_boost = {"capability": 1.3, "procedure": 1.0, "constraint": 1.1,
-                          "heuristic": 1.0, "generic": 0.7, "memory": 1.0}.get(
-                entry.get("entry_type", "procedure"), 1.0)
-
-            final_score = kdg_score * idf_mult * graph_boost * type_boost
-            scored.append((final_score, entry))
+            final_score = bm25_score * graph_boost * type_boost
+            scored.append((final_score, node))
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
         if verbose:
-            print(f"  After reranking, top {limit}:", file=sys.stderr)
+            print(f"  Candidates scored: {len(scored)}", file=sys.stderr)
+            print(f"  Top {limit}:", file=sys.stderr)
 
-        return [entry for _, entry in scored[:limit]]
+        # Return as KDG-compatible dicts (title, entry_type, id at minimum)
+        return self._format_results(scored[:limit])
+
+    def _fallback_top(self, limit: int, hint: str = "") -> list[dict]:
+        """Fallback: return top pages by PageRank when query is empty/all-stopwords."""
+        import sys
+        if hint:
+            print(f"  Note: {hint}", file=sys.stderr)
+        scored = []
+        for n in self.bm25.nodes:
+            nid = n["id"]
+            pr = self.pagerank.get(nid, 0.0)
+            deg = self.degree.get(nid, 0.0)
+            score = pr * 2.0 + deg * 1.0
+            scored.append((score, n))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return self._format_results(scored[:limit])
+
+    def _format_results(self, scored: list[tuple[float, dict]]) -> list[dict]:
+        """Convert internal nodes to KDG-compatible dict format."""
+        out = []
+        for _, node in scored:
+            s = node.get("structured", {}) or {}
+            qf = s.get("quick_facts", {}) or {}
+            out.append({
+                "id": node["id"],
+                "title": node.get("title", node["id"]),
+                "entry_type": node.get("entry_type", "capability"),
+                "content": node.get("content", ""),
+                "tags": node.get("tags", []),
+                "structured": {
+                    "definition": s.get("definition", ""),
+                    "quick_facts": qf,
+                    "options": s.get("options", []),
+                    "warnings": s.get("warnings", []),
+                },
+                "subtype": node.get("subtype", "generic"),
+            })
+        return out
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -398,10 +691,9 @@ def main():
     p.add_argument("--limit", "-n", type=int, default=10)
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--edges", default="data/test_edges.json")
-    p.add_argument("--url", default="http://localhost:8765")
     args = p.parse_args()
 
-    searcher = EnhancedSearcher(base_url=args.url, edges_file=args.edges)
+    searcher = EnhancedSearcher(edges_file=args.edges)
     results = searcher.search(args.query, limit=args.limit, verbose=args.verbose)
 
     print(f"\nResults for: {args.query}")
