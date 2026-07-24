@@ -10,7 +10,7 @@ Usage:
   python search_enhanced.py "magnetic calculation setup" --limit 10 --verbose
 """
 
-import json, argparse, re, sys, urllib.request, urllib.parse, urllib.error
+import json, argparse, re, sys
 from collections import defaultdict
 
 # Increment when BM25Engine schema changes to invalidate old caches
@@ -207,10 +207,16 @@ _STEM_SUFFIXES = [
 ]
 
 def _stem(w: str) -> str:
+    """Recursively strip suffixes until stable."""
     w = w.lower()
-    for sfx in _STEM_SUFFIXES:
-        if w.endswith(sfx) and len(w) - len(sfx) >= 3:
-            return w[:-len(sfx)]
+    changed = True
+    while changed:
+        changed = False
+        for sfx in _STEM_SUFFIXES:
+            if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+                w = w[:-len(sfx)]
+                changed = True
+                break  # restart with longest-suffix-first after each strip
     return w
 
 
@@ -410,14 +416,19 @@ class BM25Engine:
             if ch in {"k", "g", "f", "q", "x", "y", "z"}:
                 tokens.append(ch)
 
-        # Spell correction: replace unknown tokens with closest known word
+        # Spell correction: replace unknown tokens with closest known word.
+        # Skip if stemmed form is already in the index (it's a valid variant).
         corrected = []
         for i, tok in enumerate(tokens):
             if tok not in self._inverted and len(tok) >= 4:
-                suggestion = self._correct(tok)
-                if suggestion:
-                    corrected.append(f"{tok}→{suggestion}")
-                    tokens[i] = suggestion
+                stemmed = _stem(tok)
+                if stemmed in self._inverted:
+                    tokens[i] = stemmed  # just use the stem, no correction needed
+                else:
+                    suggestion = self._correct(tok)
+                    if suggestion:
+                        corrected.append(f"{tok}→{suggestion}")
+                        tokens[i] = suggestion
         if corrected:
             print(f"  Spell check: {', '.join(corrected)}", file=__import__('sys').stderr)
 
@@ -452,46 +463,6 @@ class BM25Engine:
 
     def get_node_by_id(self, nid: str) -> dict | None:
         return self._node_map.get(nid)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# D. Entropy-based functional word detection (unused, kept for reference)
-# ═══════════════════════════════════════════════════════════════════
-# KDG API client
-# ═══════════════════════════════════════════════════════════════════
-
-class KDGSearcher:
-    """Thin wrapper around KDG HTTP API."""
-
-    def __init__(self, base_url: str = "http://localhost:8765"):
-        self.base_url = base_url.rstrip("/")
-        # Cache: entry_id -> {title, entry_type, id}
-        self._entry_cache: dict[str, dict] = {}
-
-    def search(self, query: str, limit: int = 50) -> list[dict]:
-        """Search KDG and return list of entry dicts."""
-        url = f"{self.base_url}/entries/search?q={urllib.parse.quote(query)}&limit={limit}"
-        try:
-            with urllib.request.urlopen(url, timeout=10) as resp:
-                results = json.loads(resp.read())
-                for r in results:
-                    self._entry_cache[r["id"]] = r
-                return results
-        except Exception as e:
-            print(f"  KDG search error: {e}", file=sys.stderr)
-            return []
-
-    def get_entry(self, entry_id: str) -> dict | None:
-        if entry_id in self._entry_cache:
-            return self._entry_cache[entry_id]
-        url = f"{self.base_url}/entries/{entry_id}"
-        try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                entry = json.loads(resp.read())
-                self._entry_cache[entry_id] = entry
-                return entry
-        except Exception:
-            return None
 
 
 # ═══════════════════════════════════════════════════════════════════
