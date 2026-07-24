@@ -10,7 +10,7 @@ Usage:
 """
 
 import sys, json, itertools, math
-from search_enhanced import EnhancedSearcher, BM25Engine, compute_pagerank, compute_degree_centrality, build_neighbor_graph
+from search_enhanced import EnhancedSearcher, BM25Engine, compute_pagerank, build_neighbor_graph
 from collections import defaultdict
 
 # ═══════════════════════════════════════════════════════════════════
@@ -97,16 +97,14 @@ class ConfigurableSearcher:
     """EnhancedSearcher with tunable parameters exposed."""
 
     def __init__(self, **kwargs):
-        self.pg_weight = kwargs.get("pg_weight", 0.5)
-        self.deg_weight = kwargs.get("deg_weight", 0.3)
-        self.nb_boost = kwargs.get("nb_boost", 0.2)
+        self.pg_weight = kwargs.get("pg_weight", 0.6)
+        self.nb_boost = kwargs.get("nb_boost", 0.3)
         self.hotzone = kwargs.get("hotzone", 40)
-        self.primary_w = kwargs.get("primary_w", 3.0)
-        self.expanded_w = kwargs.get("expanded_w", 1.0)
+        self.primary_w = kwargs.get("primary_w", 2.0)
+        self.expanded_w = kwargs.get("expanded_w", 1.5)
         self.subtype_b = kwargs.get("subtype_b", 1.2)
         self._bm25 = BM25Engine()
         self._pr = compute_pagerank()
-        self._deg = compute_degree_centrality()
         self._nb = build_neighbor_graph()
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
@@ -153,8 +151,7 @@ class ConfigurableSearcher:
                 nb_b *= 0.5
 
             pr = self._pr.get(nid, 0.0)
-            deg = self._deg.get(nid, 0.0)
-            gb = 1.0 + math.sqrt(pr) * self.pg_weight + math.sqrt(deg) * self.deg_weight
+            gb = 1.0 + math.sqrt(pr) * self.pg_weight
 
             tb = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
                   "best_practice": 1.0, "pitfall": 1.0, "generic": 0.6}.get(st, 1.0)
@@ -178,9 +175,8 @@ class ConfigurableSearcher:
 # ═══════════════════════════════════════════════════════════════════
 
 PARAM_GRID = {
-    "pg_weight": [0.3, 0.5, 0.8],
-    "deg_weight": [0.1, 0.3, 0.5],
-    "nb_boost": [0.1, 0.2, 0.3],
+    "pg_weight": [0.3, 0.6, 0.9],
+    "nb_boost": [0.1, 0.3, 0.5],
     "hotzone": [20, 40, 60],
     "primary_w": [2.0, 3.0, 4.0],
     "expanded_w": [0.5, 1.0, 1.5],
@@ -194,8 +190,8 @@ def run_sweep(verbose: bool = False):
     print()
 
     # Test current defaults first
-    default_params = {"pg_weight": 0.5, "deg_weight": 0.3, "nb_boost": 0.2,
-                      "hotzone": 40, "primary_w": 3.0, "expanded_w": 1.0,
+    default_params = {"pg_weight": 0.6, "nb_boost": 0.3,
+                      "hotzone": 40, "primary_w": 2.0, "expanded_w": 1.5,
                       "subtype_b": 1.2}
     baseline = evaluate_config(default_params, verbose)
     print(f"  Baseline (current): P@5 = {baseline:.1%}")

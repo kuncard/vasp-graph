@@ -40,6 +40,14 @@ h1{font-size:22px;margin-bottom:4px}
 <div class="search-bar">
   <input id="q" placeholder="Search VASP parameters, tutorials, theory..."
          autofocus onkeydown="if(event.key==='Enter')search()">
+  <select id="subtype" onchange="search()">
+    <option value="">All types</option>
+    <option value="parameter">Parameter</option>
+    <option value="tutorial">Tutorial</option>
+    <option value="domain">Domain</option>
+    <option value="best_practice">Best Practice</option>
+    <option value="pitfall">Pitfall</option>
+  </select>
   <button onclick="search()">Search</button>
 </div>
 
@@ -66,7 +74,10 @@ async function search(){
   res.innerHTML = '<div class="placeholder"><div class="icon">&#9201;</div><div>Searching...</div></div>';
 
   try {
-    const resp = await fetch(`http://localhost:8766/search?q=${encodeURIComponent(q)}&limit=15`);
+    let url = `http://localhost:8766/search?q=${encodeURIComponent(q)}&limit=15`;
+    const st = document.getElementById('subtype').value;
+    if(st) url += `&subtype=${encodeURIComponent(st)}`;
+    const resp = await fetch(url);
     const data = await resp.json();
     if(!data.results || data.results.length === 0){
       res.innerHTML = '<div class="placeholder"><div class="icon">&#128533;</div><div>No results found</div><div class="hint">Try different keywords</div></div>';

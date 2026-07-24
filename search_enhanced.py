@@ -475,7 +475,6 @@ class EnhancedSearcher:
                  enriched_file: str = "data/test_enriched.json"):
         self.bm25 = BM25Engine(enriched_file)
         self.pagerank = compute_pagerank(edges_file)
-        self.degree = compute_degree_centrality(edges_file)
         self.neighbors = build_neighbor_graph(edges_file)
         print(f"  BM25 index: {len(self.bm25._inverted)} terms, {self.bm25._N} docs", file=sys.stderr)
         print(f"  PageRank: {len(self.pagerank)} nodes", file=sys.stderr)
@@ -572,11 +571,9 @@ class EnhancedSearcher:
             title = node.get("title", "")
 
             pr = self.pagerank.get(nid, 0.0)
-            deg = self.degree.get(nid, 0.0)
-            # Graph boost: only significant when BM25 score is already meaningful
-            # Uses sqrt to dampen extreme PageRank differences
+            # Graph boost: sqrt-dampened PageRank
             import math as _m
-            graph_boost = 1.0 + _m.sqrt(pr) * 0.5 + _m.sqrt(deg) * 0.1
+            graph_boost = 1.0 + _m.sqrt(pr) * 0.6
 
             st = node.get("subtype", "generic")
             type_boost = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
@@ -639,9 +636,7 @@ class EnhancedSearcher:
         for n in self.bm25.nodes:
             nid = n["id"]
             pr = self.pagerank.get(nid, 0.0)
-            deg = self.degree.get(nid, 0.0)
-            score = pr * 2.0 + deg * 1.0
-            scored.append((score, n))
+            scored.append((pr, n))
         scored.sort(key=lambda x: x[0], reverse=True)
         return self._format_results(scored[:limit])
 
@@ -676,12 +671,15 @@ def main():
     p = argparse.ArgumentParser(description="Enhanced VASP knowledge graph search")
     p.add_argument("query", help="Search query")
     p.add_argument("--limit", "-n", type=int, default=10)
+    p.add_argument("--subtype", default=None,
+                   help="Filter: parameter|tutorial|domain|best_practice|pitfall|generic")
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--edges", default="data/test_edges.json")
     args = p.parse_args()
 
     searcher = EnhancedSearcher(edges_file=args.edges)
-    results = searcher.search(args.query, limit=args.limit, verbose=args.verbose)
+    results = searcher.search(args.query, limit=args.limit, verbose=args.verbose,
+                              subtype=args.subtype)
 
     print(f"\nResults for: {args.query}")
     print(f"{'─' * 60}")

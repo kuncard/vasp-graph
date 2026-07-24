@@ -53,9 +53,22 @@ def search(q: str = Query(..., description="Search query"),
     """Enhanced search: BM25 + graph boost + type boost."""
     if searcher is None:
         return {"error": "Searcher not initialized yet"}
-    results = searcher.search(q, limit=limit, verbose=verbose, subtype=subtype)
+    from io import StringIO
+    import sys as _sys
+    buf = StringIO()
+    old = _sys.stderr
+    _sys.stderr = buf
+    try:
+        results = searcher.search(q, limit=limit, verbose=verbose, subtype=subtype)
+    finally:
+        _sys.stderr = old
+    # Extract spell correction hints from stderr
+    captured = buf.getvalue()
+    spell_hints = [l.replace("Spell check: ", "").strip()
+                   for l in captured.split("\n") if "Spell check:" in l]
     return {
         "query": q,
+        "spell_corrections": spell_hints if spell_hints else None,
         "subtype_filter": subtype,
         "total": len(results),
         "results": results,
