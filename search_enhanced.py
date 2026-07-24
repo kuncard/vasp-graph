@@ -13,6 +13,25 @@ Usage:
 import json, argparse, re, sys, urllib.request, urllib.parse, urllib.error
 from collections import defaultdict
 
+# Increment when BM25Engine schema changes to invalidate old caches
+_CACHE_VERSION = 2
+
+# ── Unified stop words (used by expand_query + BM25Engine) ──
+_STOP_WORDS = {
+    "a", "an", "the", "of", "in", "on", "at", "to", "for",
+    "and", "or", "is", "are", "be", "was", "were", "been",
+    "how", "what", "why", "with", "can", "do", "does",
+    "method", "methods", "using", "used", "use", "note", "notes",
+    "example", "examples", "result", "results", "value", "values",
+    "case", "cases", "follow", "following", "set", "setting",
+    "page", "pages", "see", "also", "may", "default",
+    "will", "must", "should", "need", "needs",
+    "one", "two", "first", "well", "much", "part", "type",
+    "per", "due", "via", "way", "many", "often", "without", "within",
+    "section", "describe", "described", "shown", "given",
+    "available", "possible", "important", "required",
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # A. Query Expansion — VASP domain synonyms + morphological variants
 # ═══════════════════════════════════════════════════════════════════
@@ -60,19 +79,7 @@ def expand_query(query: str, max_tokens: int = 20) -> list[str]:
     Original query tokens are included first.
     """
     tokens_raw = re.findall(r"[a-zA-Z0-9_-]+", query.lower())
-    # Filter stopwords
-    stopwords = {"a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or",
-                 "is", "are", "be", "how", "what", "why", "with", "can", "do", "does",
-                 "method", "methods", "using", "used", "use", "note", "notes",
-                 "example", "examples", "result", "results", "value", "values",
-                 "case", "cases", "follow", "following", "set", "setting",
-                 "page", "pages", "see", "also", "may", "default",
-                 "will", "must", "should", "need", "needs",
-                 "one", "two", "first", "well", "much", "part", "type",
-                 "per", "due", "via", "way", "many", "often", "without", "within",
-                 "section", "describe", "described", "shown", "given",
-                 "available", "possible", "important", "required"}
-    tokens = [t for t in tokens_raw if t not in stopwords and len(t) > 1]
+    tokens = [t for t in tokens_raw if t not in _STOP_WORDS and len(t) > 1]
 
     # Handle VASP compound patterns in raw query (before hyphen-splitting loses them)
     _COMPOUND_MAP = {
@@ -179,79 +186,6 @@ def build_neighbor_graph(edges_file: str = "data/test_edges.json") -> dict[str, 
 
 
 # ═══════════════════════════════════════════════════════════════════
-# C. IDF — Inverse Document Frequency
-# ═══════════════════════════════════════════════════════════════════
-
-def compute_idf(enriched_file: str = "data/test_enriched.json") -> dict[str, float]:
-    """Compute IDF weights for all words across the knowledge base.
-
-    IDF = log(total_docs / doc_frequency)
-    High IDF → rare word → carries more signal (e.g. "magnetic")
-    Low IDF  → common word → stopword-like (e.g. "calculation", "setup")
-    """
-    import math
-
-    with open(enriched_file, encoding="utf-8") as f:
-        nodes = json.load(f)
-
-    total = len(nodes)
-    doc_freq: dict[str, int] = defaultdict(int)
-
-    for n in nodes:
-        title = (n.get("title") or "").lower()
-        content = (n.get("content") or "").lower()
-        text = title + " " + content
-        # Tokenize: split on non-alphanumeric, min 3 chars
-        tokens = set(re.findall(r"[a-z]{3,}", text))
-        # Also split on underscores (VASP page IDs like "Spin-orbit_coupling")
-        id_tokens = set(re.findall(r"[a-z]{3,}", n["id"].lower().replace("_", " ")))
-        all_tokens = tokens | id_tokens
-        for token in all_tokens:
-            doc_freq[token] += 1
-
-    # Compute IDF, clamping at reasonable bounds
-    idf: dict[str, float] = {}
-    for word, freq in doc_freq.items():
-        if freq == 0:
-            continue
-        idf[word] = math.log(total / freq)
-        # Cap: min 0.5 (for very common words), max 6 (for very rare words)
-        idf[word] = max(0.5, min(6.0, idf[word]))
-
-    return idf
-
-
-def compute_tf(enriched_file: str = "data/test_enriched.json") -> dict[str, dict[str, int]]:
-    """Precompute term frequencies for all nodes.
-
-    Returns {entry_id: {stemmed_word: raw_count}} for title+content text.
-    Uses the same simple stemmer as import_to_kdg.py for consistency.
-    """
-    import math
-
-    # Use module-level stemmer
-    with open(enriched_file, encoding="utf-8") as f:
-        nodes = json.load(f)
-
-    tf: dict[str, dict[str, int]] = {}
-    for n in nodes:
-        nid = n["id"]
-        title = (n.get("title") or "").lower()
-        content = (n.get("content") or "").lower()
-        text = title + " " + content
-        words = re.findall(r"[a-z]{3,}", text)
-
-        counts: dict[str, int] = defaultdict(int)
-        for w in words:
-            s = _stem(w)
-            counts[s] += 1
-
-        tf[nid] = dict(counts)
-
-    return tf
-
-
-# ═══════════════════════════════════════════════════════════════════
 # BM25 engine — replaces KDG keyword search entirely
 # ═══════════════════════════════════════════════════════════════════
 
@@ -289,22 +223,25 @@ class BM25Engine:
         # ── Try cache first ──
         cache_path = enriched_file + ".bm25_cache"
         src_mtime = os.path.getmtime(enriched_file) if os.path.exists(enriched_file) else 0
-        if os.path.exists(cache_path):
-            cache_mtime = os.path.getmtime(cache_path)
-            if cache_mtime >= src_mtime:
+        if os.path.exists(cache_path) and os.path.getmtime(cache_path) >= src_mtime:
+            try:
                 t0 = time.time()
                 cached = pickle.load(open(cache_path, "rb"))
-                self.nodes = cached["nodes"]
-                self._node_map = cached["node_map"]
-                self._inverted = cached["inverted"]
-                self._doc_lengths = cached["doc_lengths"]
-                self._avgdl = cached["avgdl"]
-                self._idf = cached["idf"]
-                self._vocab = cached["vocab"]
-                self._stop_words = cached["stop_words"]
-                self._N = cached["N"]
-                print(f"  BM25 cache loaded ({time.time()-t0:.1f}s)", file=__import__('sys').stderr)
-                return
+                if cached.get("_version") == _CACHE_VERSION:
+                    self.nodes = cached["nodes"]
+                    self._node_map = cached["node_map"]
+                    self._inverted = cached["inverted"]
+                    self._doc_lengths = cached["doc_lengths"]
+                    self._avgdl = cached["avgdl"]
+                    self._idf = cached["idf"]
+                    self._vocab = cached["vocab"]
+                    self._raw_vocab = cached.get("raw_vocab", set())
+                    self._stop_words = cached.get("stop_words", _STOP_WORDS)
+                    self._N = cached["N"]
+                    print(f"  BM25 cache loaded ({time.time()-t0:.1f}s)", file=__import__('sys').stderr)
+                    return
+            except Exception:
+                pass
 
         t0 = time.time()
         with open(enriched_file, encoding="utf-8") as f:
@@ -312,25 +249,8 @@ class BM25Engine:
 
         self._node_map = {n["id"]: n for n in self.nodes}
 
-        # ── VASP-specific stop words ──
-        # These appear everywhere but carry zero topic signal.
-        # Filtered during both indexing and querying.
-        self._stop_words = {
-            # KDG originals
-            "a", "an", "the", "of", "in", "on", "at", "to", "for",
-            "and", "or", "is", "are", "be", "was", "were", "been",
-            # High-frequency VASP functional words
-            "method", "methods", "using", "used", "use", "note",
-            "example", "examples", "result", "results", "value",
-            "case", "cases", "follow", "following", "set", "setting",
-            "page", "pages", "see", "also", "may", "default",
-            "can", "will", "must", "should", "need", "needs",
-            "two", "one", "first", "second", "well", "much",
-            "part", "type", "form", "per", "due", "via",
-            "way", "many", "often", "without", "within",
-            "section", "describe", "described", "shown", "given",
-            "available", "possible", "important", "required",
-        }
+        # ── Stop words: use module-level unified set ──
+        self._stop_words = _STOP_WORDS
 
         # ── Build inverted index with positions ──
         # {stemmed_word: {doc_idx: [pos1, pos2, ...]}}
@@ -377,6 +297,7 @@ class BM25Engine:
         # Convert defaultdict→dict for pickle compatibility
         inverted_plain = {k: dict(v) for k, v in self._inverted.items()}
         cached = {
+            "_version": _CACHE_VERSION,
             "nodes": self.nodes, "node_map": self._node_map,
             "inverted": inverted_plain, "doc_lengths": self._doc_lengths,
             "avgdl": self._avgdl, "idf": self._idf,
@@ -535,69 +456,6 @@ class BM25Engine:
 
 # ═══════════════════════════════════════════════════════════════════
 # D. Entropy-based functional word detection (unused, kept for reference)
-# ═══════════════════════════════════════════════════════════════════
-
-def compute_entropy_weight(enriched_file: str = "data/test_enriched.json") -> dict[str, float]:
-    """Compute word weights based on distribution entropy across subtypes.
-
-    Low entropy → word concentrated in few subtypes → content word → high weight
-    High entropy → word spread evenly across subtypes → functional word → low weight
-
-    Returns {word: weight} where 1.0 = neutral, >1.0 = content word, <1.0 = functional.
-    """
-    import math
-
-    with open(enriched_file, encoding="utf-8") as f:
-        nodes = json.load(f)
-
-    # Build: word → {subtype: doc_count}
-    word_subtype_docs: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    subtype_doc_total: dict[str, int] = defaultdict(int)
-
-    for n in nodes:
-        subtype = n.get("subtype", "generic")
-        subtype_doc_total[subtype] += 1
-
-        title = (n.get("title") or "").lower()
-        content = (n.get("content") or "").lower()
-        text = title + " " + content
-        words = set(re.findall(r"[a-z]{3,}", text))
-
-        for w in words:
-            word_subtype_docs[w][subtype] += 1
-
-    # Compute entropy for each word
-    total_subtypes = len(subtype_doc_total)
-    entropy_weight: dict[str, float] = {}
-    subtypes_list = sorted(subtype_doc_total.keys())
-
-    for word, subtype_counts in word_subtype_docs.items():
-        # Total docs containing this word
-        total_docs = sum(subtype_counts.values())
-        if total_docs < 3:  # too rare to meaningfully analyze
-            continue
-
-        # Calculate entropy: -Σ p(s|w) * log(p(s|w))
-        entropy = 0.0
-        for st in subtypes_list:
-            count = subtype_counts.get(st, 0)
-            if count > 0:
-                p = count / total_docs
-                entropy -= p * math.log(p)
-
-        # Max possible entropy = log(number of subtypes)
-        max_entropy = math.log(len(subtypes_list))
-        normalized = entropy / max_entropy if max_entropy > 0 else 0
-
-        # Convert to weight: low entropy → high weight
-        # entropy 0 → weight 3.0 (only in one subtype)
-        # entropy 1 → weight 0.5 (perfectly uniform across subtypes)
-        weight = 3.0 - 2.5 * normalized
-        entropy_weight[word] = max(0.3, min(3.0, weight))
-
-    return entropy_weight
-
-
 # ═══════════════════════════════════════════════════════════════════
 # KDG API client
 # ═══════════════════════════════════════════════════════════════════
@@ -767,7 +625,8 @@ class EnhancedSearcher:
 
             # Hub penalty: VASP core files (INCAR, POTCAR, KPOINTS, POSCAR, OUTCAR)
             # are linked to almost everything — penalize them when top result is a parameter
-            _HUB_TITLES = {"INCAR", "POTCAR", "KPOINTS", "POSCAR", "OUTCAR"}
+            _HUB_TITLES = {"INCAR", "POTCAR", "KPOINTS", "POSCAR", "OUTCAR",
+                           "INCAR tag", "Examples"}
             top_subtype = self.bm25.get_node(sorted_by_bm25[0][0]).get("subtype", "")
             if top_subtype == "parameter" and title in _HUB_TITLES:
                 nb_boost *= 0.5  # halve the neighbor boost for hub pages
