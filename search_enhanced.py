@@ -229,29 +229,7 @@ def compute_tf(enriched_file: str = "data/test_enriched.json") -> dict[str, dict
     """
     import math
 
-    # Minimal inline stemmer (same logic as import_to_kdg.py)
-    suffixes = [
-        "izational", "isation", "izations", "tational", "ational",
-        "ization", "fulness", "ousness", "iveness", "ability",
-        "alities", "alisms", "ements", "ations", "istics",
-        "ement", "ments", "ation", "ities", "fully",
-        "ingly", "ously", "istic", "izing", "ising",
-        "ical", "able", "ible", "ness", "ment",
-        "ship", "tion", "sion", "ally", "ated",
-        "ized", "ised", "ting", "ring", "ling",
-        "ding", "sing", "ives", "isms",
-        "ion", "est", "ity", "ism", "ize",
-        "ers", "ies", "ing", "als", "ves",
-        "ed", "es", "ly", "al", "ic",
-        "er", "or", "s",
-    ]
-    def stem(w):
-        w = w.lower()
-        for sfx in suffixes:
-            if w.endswith(sfx) and len(w) - len(sfx) >= 3:
-                return w[:-len(sfx)]
-        return w
-
+    # Use module-level stemmer
     with open(enriched_file, encoding="utf-8") as f:
         nodes = json.load(f)
 
@@ -265,7 +243,7 @@ def compute_tf(enriched_file: str = "data/test_enriched.json") -> dict[str, dict
 
         counts: dict[str, int] = defaultdict(int)
         for w in words:
-            s = stem(w)
+            s = _stem(w)
             counts[s] += 1
 
         tf[nid] = dict(counts)
@@ -277,39 +255,62 @@ def compute_tf(enriched_file: str = "data/test_enriched.json") -> dict[str, dict
 # BM25 engine — replaces KDG keyword search entirely
 # ═══════════════════════════════════════════════════════════════════
 
+# ── Module-level stemmer (pickle-safe) ──
+_STEM_SUFFIXES = [
+    "izational", "isation", "izations", "tational", "ational",
+    "ization", "fulness", "ousness", "iveness", "ability",
+    "alities", "alisms", "ements", "ations", "istics",
+    "ement", "ments", "ation", "ities", "fully",
+    "ingly", "ously", "istic", "izing", "ising",
+    "ical", "able", "ible", "ness", "ment",
+    "ship", "tion", "sion", "ally", "ated",
+    "ized", "ised", "ting", "ring", "ling",
+    "ding", "sing", "ives", "isms",
+    "ion", "est", "ity", "ism", "ize",
+    "ers", "ies", "ing", "als", "ves",
+    "ed", "es", "ly", "al", "ic",
+    "er", "or", "s",
+]
+
+def _stem(w: str) -> str:
+    w = w.lower()
+    for sfx in _STEM_SUFFIXES:
+        if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+            return w[:-len(sfx)]
+    return w
+
+
 class BM25Engine:
     """Local BM25 search over the enriched JSON, no KDG dependency for scoring."""
 
     def __init__(self, enriched_file: str = "data/test_enriched.json"):
-        import math
+        import math, os, pickle, time
 
+        # ── Try cache first ──
+        cache_path = enriched_file + ".bm25_cache"
+        src_mtime = os.path.getmtime(enriched_file) if os.path.exists(enriched_file) else 0
+        if os.path.exists(cache_path):
+            cache_mtime = os.path.getmtime(cache_path)
+            if cache_mtime >= src_mtime:
+                t0 = time.time()
+                cached = pickle.load(open(cache_path, "rb"))
+                self.nodes = cached["nodes"]
+                self._node_map = cached["node_map"]
+                self._inverted = cached["inverted"]
+                self._doc_lengths = cached["doc_lengths"]
+                self._avgdl = cached["avgdl"]
+                self._idf = cached["idf"]
+                self._vocab = cached["vocab"]
+                self._stop_words = cached["stop_words"]
+                self._N = cached["N"]
+                print(f"  BM25 cache loaded ({time.time()-t0:.1f}s)", file=__import__('sys').stderr)
+                return
+
+        t0 = time.time()
         with open(enriched_file, encoding="utf-8") as f:
             self.nodes = json.load(f)
 
         self._node_map = {n["id"]: n for n in self.nodes}
-
-        # Simple stemmer (same as import_to_kdg.py)
-        suffixes = [
-            "izational", "isation", "izations", "tational", "ational",
-            "ization", "fulness", "ousness", "iveness", "ability",
-            "alities", "alisms", "ements", "ations", "istics",
-            "ement", "ments", "ation", "ities", "fully",
-            "ingly", "ously", "istic", "izing", "ising",
-            "ical", "able", "ible", "ness", "ment",
-            "ship", "tion", "sion", "ally", "ated",
-            "ized", "ised", "ting", "ring", "ling",
-            "ding", "sing", "ives", "isms",
-            "ion", "est", "ity", "ism", "ize",
-            "ers", "ies", "ing", "als", "ves",
-            "ed", "es", "ly", "al", "ic",
-            "er", "or", "s",
-        ]
-        def stem(w):
-            w = w.lower()
-            for sfx in suffixes:
-                if w.endswith(sfx) and len(w) - len(sfx) >= 3:
-                    return w[:-len(sfx)]
-            return w
 
         # ── VASP-specific stop words ──
         # These appear everywhere but carry zero topic signal.
@@ -349,7 +350,7 @@ class BM25Engine:
 
             self._doc_lengths.append(len(words))
             for pos, w in enumerate(words):
-                self._inverted[stem(w)][idx].append(pos)
+                self._inverted[_stem(w)][idx].append(pos)
 
         self._avgdl = sum(self._doc_lengths) / max(1, self._N)
 
@@ -358,6 +359,74 @@ class BM25Engine:
         for word, doc_dict in self._inverted.items():
             df = len(doc_dict)
             self._idf[word] = math.log((self._N - df + 0.5) / (df + 0.5) + 1.0)
+
+        # ── Vocabs for spell correction ──
+        # Stemmed vocab (for index lookup)
+        self._vocab: set[str] = {w for w in self._inverted if len(w) >= 4}
+        # Raw vocab (for spell correction — unstemmed, longer, with stop words excluded)
+        raw_vocab: set[str] = set()
+        for n in self.nodes:
+            text = ((n.get("title") or "") + " " + (n.get("content") or "")).lower()
+            for w in re.findall(r"[a-z]{4,}", text):
+                if w not in self._stop_words:
+                    raw_vocab.add(w)
+        self._raw_vocab = raw_vocab
+
+        # ── Save cache ──
+        cache_path = enriched_file + ".bm25_cache"
+        # Convert defaultdict→dict for pickle compatibility
+        inverted_plain = {k: dict(v) for k, v in self._inverted.items()}
+        cached = {
+            "nodes": self.nodes, "node_map": self._node_map,
+            "inverted": inverted_plain, "doc_lengths": self._doc_lengths,
+            "avgdl": self._avgdl, "idf": self._idf,
+            "vocab": self._vocab, "raw_vocab": self._raw_vocab,
+            "stop_words": self._stop_words, "N": self._N,
+        }
+        pickle.dump(cached, open(cache_path, "wb"))
+        print(f"  BM25 index built ({time.time()-t0:.1f}s), cached", file=__import__('sys').stderr)
+
+    # ── Spelling correction ──
+    def _correct(self, token: str) -> str | None:
+        """Find the closest raw-vocab word to *token* (Levenshtein ≤ 2)."""
+        if token in self._inverted or token in self._raw_vocab:
+            return None  # already correct
+
+        best, best_dist = None, 99
+        prefix = token[:2]
+        candidates = [w for w in self._raw_vocab if w[:2] == prefix]
+        if not candidates:
+            candidates = list(self._raw_vocab)[:2000]
+
+        for w in candidates:
+            if abs(len(w) - len(token)) > 3:
+                continue
+            # Simple Levenshtein
+            d = self._levenshtein(token, w)
+            if d < best_dist and d <= 2:
+                best_dist = d
+                best = w
+                if d == 1:
+                    break  # good enough
+        return best
+
+    @staticmethod
+    def _levenshtein(a: str, b: str) -> int:
+        if len(a) < len(b):
+            return BM25Engine._levenshtein(b, a)
+        if len(b) == 0:
+            return len(a)
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a):
+            curr = [i + 1]
+            for j, cb in enumerate(b):
+                curr.append(min(
+                    prev[j + 1] + 1,       # delete
+                    curr[j] + 1,            # insert
+                    prev[j] + (ca != cb),   # substitute
+                ))
+            prev = curr
+        return prev[-1]
 
     # ── Proximity scoring ──
     def _proximity_boost(self, doc_idx: int, query_stems: list[str],
@@ -419,30 +488,20 @@ class BM25Engine:
         for ch in re.findall(r"[a-z]", query.lower()):
             if ch in {"k", "g", "f", "q", "x", "y", "z"}:
                 tokens.append(ch)
-        # Build stem lookup inline
-        suffixes = [
-            "izational", "isation", "izations", "tational", "ational",
-            "ization", "fulness", "ousness", "iveness", "ability",
-            "alities", "alisms", "ements", "ations", "istics",
-            "ement", "ments", "ation", "ities", "fully",
-            "ingly", "ously", "istic", "izing", "ising",
-            "ical", "able", "ible", "ness", "ment",
-            "ship", "tion", "sion", "ally", "ated",
-            "ized", "ised", "ting", "ring", "ling",
-            "ding", "sing", "ives", "isms",
-            "ion", "est", "ity", "ism", "ize",
-            "ers", "ies", "ing", "als", "ves",
-            "ed", "es", "ly", "al", "ic",
-            "er", "or", "s",
-        ]
-        def stem(w):
-            w = w.lower()
-            for sfx in suffixes:
-                if w.endswith(sfx) and len(w) - len(sfx) >= 3:
-                    return w[:-len(sfx)]
-            return w
 
-        stems = list({stem(t) for t in tokens})
+        # Spell correction: replace unknown tokens with closest known word
+        corrected = []
+        for i, tok in enumerate(tokens):
+            if tok not in self._inverted and len(tok) >= 4:
+                suggestion = self._correct(tok)
+                if suggestion:
+                    corrected.append(f"{tok}→{suggestion}")
+                    tokens[i] = suggestion
+        if corrected:
+            print(f"  Spell check: {', '.join(corrected)}", file=__import__('sys').stderr)
+
+        # Stem tokens using module-level stemmer
+        stems = list({_stem(t) for t in tokens})
 
         # Score each candidate document
         doc_scores: dict[int, float] = defaultdict(float)
