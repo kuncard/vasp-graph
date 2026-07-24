@@ -753,12 +753,15 @@ class EnhancedSearcher:
             type_boost = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
                           "best_practice": 1.0, "pitfall": 1.0, "generic": 0.6}.get(st, 1.0)
 
-            # Exact title match: searching "GGA" should put GGA page first
-            exact_match = any(
-                tok.lower() == title.lower() or tok.lower() == title.lower().replace("_", " ")
-                for tok in query_tokens
-            )
-            title_boost = 1.5 if exact_match else 1.0
+            # Title substring boost: high-IDF tokens matching page title get a lift.
+            # "GGA" → GGA + GGA_COMPAT boosted, but "calculation" won't boost everything.
+            title_boost = 1.0
+            for tok in query_tokens:
+                tok_idf = self.bm25._idf.get(tok, 0.0)
+                if tok_idf > 2.0 and (tok in title.lower() or
+                                       tok in title.lower().replace("_", " ")):
+                    title_boost = 1.5
+                    break  # one good token is enough
 
             nb_boost = neighbor_boosts.get(nid, 1.0)
 
