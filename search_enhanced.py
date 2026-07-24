@@ -753,6 +753,13 @@ class EnhancedSearcher:
             type_boost = {"domain": 1.3, "parameter": 1.1, "tutorial": 1.0,
                           "best_practice": 1.0, "pitfall": 1.0, "generic": 0.6}.get(st, 1.0)
 
+            # Exact title match: searching "GGA" should put GGA page first
+            exact_match = any(
+                tok.lower() == title.lower() or tok.lower() == title.lower().replace("_", " ")
+                for tok in query_tokens
+            )
+            title_boost = 1.5 if exact_match else 1.0
+
             nb_boost = neighbor_boosts.get(nid, 1.0)
 
             # Hub penalty: VASP core files (INCAR, POTCAR, KPOINTS, POSCAR, OUTCAR)
@@ -771,7 +778,7 @@ class EnhancedSearcher:
             if subtype_boost != 1.0 and verbose:
                 pass  # tracked below
 
-            final_score = bm25_score * nb_boost * graph_boost * type_boost * subtype_boost
+            final_score = bm25_score * nb_boost * graph_boost * type_boost * subtype_boost * title_boost
             scored.append((final_score, node))
 
         scored.sort(key=lambda x: x[0], reverse=True)
