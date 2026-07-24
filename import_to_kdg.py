@@ -185,7 +185,7 @@ def import_graph(nodes_path: str, edges_path: str, db_path: str):
                 entry_type=entry_type,
                 content=md_content,
                 tags=tags[:10],
-                metadata=EntryMetadata(subtype=n.get("subtype", "")),
+                metadata=EntryMetadata(custom={"subtype": n.get("subtype", "")}),
             )
             entries.append(entry)
 

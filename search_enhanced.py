@@ -203,13 +203,33 @@ def load_nodes_from_kdg(db_path: str) -> list[dict]:
         except json.JSONDecodeError: meta = {}
         try: tag_list = json.loads(r.tags or "[]")
         except json.JSONDecodeError: tag_list = []
+        # Infer subtype from entry_type + content heuristics
+        etype = r.entry_type or "capability"
+        content = r.content or ""
+        if etype == "constraint":
+            subtype = "pitfall"
+        elif etype == "heuristic":
+            subtype = "best_practice"
+        elif etype == "procedure":
+            subtype = "tutorial"
+        elif etype == "capability":
+            # Check if this looks like a parameter page (has Quick Facts section)
+            if "## Quick Facts" in content:
+                subtype = "parameter"
+            else:
+                subtype = "domain"
+        else:
+            subtype = "generic"
+        # Also try custom metadata
+        custom = meta.get("custom", {}) or {}
+        subtype = custom.get("subtype", subtype)
         nodes.append({
             "id": r.id,
             "title": r.title or "",
-            "entry_type": r.entry_type or "capability",
-            "content": r.content or "",
+            "entry_type": etype,
+            "content": content,
             "tags": tag_list,
-            "subtype": meta.get("subtype", "generic"),
+            "subtype": subtype,
             "structured": {},
         })
     return nodes
